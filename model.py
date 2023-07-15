@@ -34,11 +34,18 @@ class BaseModel(pl.LightningModule):
 
         self.save_every = save_images_every_n_epochs
         self.save_images = False
+        self._image_dir = None
 
     def configure_step(self, batch_idx: int):
         self.save_images = self.save_every != 0 and self.current_epoch % self.save_every == 0 and batch_idx == 0
-        self.image_dir = os.path.join(self.logger.log_dir, 'figures')
-        os.makedirs(self.image_dir, exist_ok=True)
+
+    @property
+    def image_dir(self):
+        if self._image_dir is None:
+            self._image_dir = os.path.join(self.logger.log_dir, 'figures')
+            os.makedirs(self._image_dir, exist_ok=True)
+
+        return self._image_dir
 
     def on_after_batch_transfer(self, batch: list[torch.Tensor], _: int) -> list[torch.Tensor]:
         fixed, moving, *c = batch
