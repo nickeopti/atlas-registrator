@@ -1,4 +1,5 @@
 figs/
 logs/
+plots/
 __pycache__
 slice_600.npy
