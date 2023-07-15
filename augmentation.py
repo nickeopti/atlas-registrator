@@ -58,19 +58,19 @@ def batch_black(x: torch.Tensor):
     b, h, w = x.shape
 
     alpha = torch.rand(b, device=x.device) - 0.5
-    beta = torch.randint(1, h // 3, (b,), device=x.device)
+    beta = torch.randint(1, h // 10, (b,), device=x.device)
     top = yy + alpha[:, None, None] * xx < beta[:, None, None]
 
     alpha = torch.rand(b, device=x.device) - 0.5
-    beta = torch.randint(1, h // 3, (b,), device=x.device)
+    beta = torch.randint(1, h // 10, (b,), device=x.device)
     bottom = yy + alpha[:, None, None] * xx > h - beta[:, None, None]
 
     alpha = torch.rand(b, device=x.device) - 0.5
-    beta = torch.randint(1, w // 3, (b,), device=x.device)
+    beta = torch.randint(1, w // 10, (b,), device=x.device)
     left = xx + alpha[:, None, None] * yy < beta[:, None, None]
 
     alpha = torch.rand(b, device=x.device) - 0.5
-    beta = torch.randint(1, h // 3, (b,), device=x.device)
+    beta = torch.randint(1, h // 10, (b,), device=x.device)
     right = xx + alpha[:, None, None] * yy > w - beta[:, None, None]
 
     return x * (~top) * (~bottom) * (~left) * (~right)
@@ -138,7 +138,7 @@ def augment(x: torch.Tensor, augmentations: Iterable[Callable[[torch.Tensor], to
 ALL_AUGMENTATIONS = (
     additive_gaussian,
     multiplicative_gaussian,
-    gaussian_blur,
+    # gaussian_blur,
     batch_checkerboard,
     batch_black,
     batch_erase,
