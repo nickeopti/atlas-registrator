@@ -14,8 +14,12 @@ def clahe(x: torch.Tensor):
     )
 
 
+def normalise(x: torch.Tensor):
+    return x / x.max(dim=-1).values.max(dim=-1).values[:, :, None, None]
+
+
 def pad_resize(image: torch.Tensor, h, w):
-    _, h_1, w_1 = image.shape
+    *_, h_1, w_1 = image.shape
     ratio_f = w / h
     ratio_1 = w_1 / h_1
 
