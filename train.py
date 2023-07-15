@@ -16,6 +16,7 @@ if __name__ == '__main__':
     dataset = selector.add_arguments(parser, 'dataset', data.CCFv3Torch)()
     train_data_loader = selector.add_arguments(parser, 'dataloader', DataLoader)(
         dataset=dataset,
+        shuffle=True,
         num_workers=0,
     )
     network = selector.add_options_from_module(parser, 'model', model, pl.LightningModule)()
