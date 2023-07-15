@@ -4,7 +4,7 @@ import torch
 import skimage.exposure
 
 import data
-from model import FullRegressor
+from model import JointRegressor
 
 if __name__ == '__main__':
     parser = ArgumentParser()
@@ -16,7 +16,7 @@ if __name__ == '__main__':
 
     dataset = data.TiffTestImages(args.data)
     atlas = data.CCFv3(args.atlas, dorsoventral_rotation=(-1, 1), mediolateral_rotation=(-1, 1))
-    model = FullRegressor.load_from_checkpoint(args.model)
+    model = JointRegressor.load_from_checkpoint(args.model)
 
     with torch.no_grad():
         predictions = []
