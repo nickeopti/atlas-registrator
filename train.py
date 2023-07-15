@@ -1,3 +1,4 @@
+import datetime
 from argparse import ArgumentParser
 
 import pytorch_lightning as pl
@@ -33,4 +34,6 @@ if __name__ == '__main__':
         ],
     )
 
+    print(datetime.datetime.now())
     trainer.fit(network, train_data_loader)
+    print(datetime.datetime.now())
