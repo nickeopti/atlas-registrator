@@ -1,3 +1,4 @@
+import os
 import os.path
 from typing import Tuple
 
@@ -37,6 +38,7 @@ class BaseModel(pl.LightningModule):
     def configure_step(self, batch_idx: int):
         self.save_images = self.save_every != 0 and self.current_epoch % self.save_every == 0 and batch_idx == 0
         self.image_dir = os.path.join(self.logger.log_dir, 'figures')
+        os.makedirs(self.image_dir, exist_ok=True)
 
     def on_after_batch_transfer(self, batch: list[torch.Tensor], _: int) -> list[torch.Tensor]:
         fixed, moving, *c = batch
@@ -163,12 +165,12 @@ class Regressor(torch.nn.Module):
 
 
 class CascadeRegressor(BaseModel):
-    def __init__(self, n: int = 1, **kwargs):
+    def __init__(self, cascade_layers: int = 1, **kwargs):
         super().__init__(**kwargs)
 
         self.layers = torch.nn.ModuleList(
             Regressor()
-            for _ in range(n)
+            for _ in range(cascade_layers)
         )
 
     def forward(self, x: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[torch.Tensor, ...]:
@@ -181,7 +183,7 @@ class CascadeRegressor(BaseModel):
         cum_x, cum_y, cum_r = (torch.zeros(moving.shape[0], device=moving.device) for _ in range(3))
         cum_s, cum_a = (torch.ones(moving.shape[0], device=moving.device) for _ in range(2))
 
-        moved = moving
+        moved = moving.clone()
         for i, layer in enumerate(self.layers):
             pred_x, pred_y, pred_r, pred_s, pred_a = map(torch.stack, zip(*layer((fixed, moved))))
             pred_s = torch.sigmoid(pred_s) * 2
@@ -238,22 +240,35 @@ class CascadeRegressor(BaseModel):
 
 
 class Classifier(BaseModel):
-    def __init__(self, layered: bool = True, **kwargs):
+    def __init__(self, layered: bool = True, tiny: bool = True, **kwargs):
         super().__init__(**kwargs)
 
         self.layered = layered
+        self.tiny = tiny
 
-        self.resnet = torchvision.models.resnet.resnet50(
-            weights=torchvision.models.resnet.ResNet50_Weights.IMAGENET1K_V2,
-        )
+        if self.tiny:
+            self.resnet = resnet.create_resnet(
+                model_depth=10,
+                n_input_channels=2 if self.layered else 1,
+                num_classes=256,
+                activation_function=torch.nn.ELU,
+                linear_factor=16,
+            )
+        else:
+            self.resnet = torchvision.models.resnet.resnet50(
+                weights=torchvision.models.resnet.ResNet50_Weights.IMAGENET1K_V2,
+            )
 
-        conv1_weights = self.resnet.conv1.weight.sum(dim=1, keepdim=True)
-        if self.layered:
-            conv1_weights = conv1_weights.expand(-1, 2, -1, -1)
-        self.resnet.conv1.weight = torch.nn.Parameter(conv1_weights)
+            conv1_weights = self.resnet.conv1.weight.sum(dim=1, keepdim=True)
+            if self.layered:
+                conv1_weights = conv1_weights.repeat(1, 2, 1, 1)
+            self.resnet.conv1.weight = torch.nn.Parameter(conv1_weights)
 
         self.elu = torch.nn.ELU()
-        self.hidden = torch.nn.Linear(1000 if self.layered else 2000, 128)
+        if self.tiny:
+            self.hidden = torch.nn.Linear(256 if self.layered else 512, 128)
+        else:
+            self.hidden = torch.nn.Linear(1000 if self.layered else 2000, 128)
         self.horizontal = torch.nn.Linear(128, 3)
         self.vertical = torch.nn.Linear(128, 3)
         self.rotation = torch.nn.Linear(128, 3)
