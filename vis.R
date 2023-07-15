@@ -22,6 +22,7 @@ metrics %>%
     pivot_longer(!c(epoch, step), names_to = "loss", values_to = "value") %>%
     group_by(epoch, loss) %>%
     summarise(value = mean(value)) %>%
+    filter(epoch >= 10) %>%
     ggplot() +
         aes(x = epoch, y = value) +
         facet_wrap(~loss, scales = "free_y") +
@@ -31,4 +32,4 @@ metrics %>%
         xlab("Epoch") +
         ylab("Loss")
 
-ggsave(paste("plots", paste(args[1], ".png", sep = ""), sep = "/"), width = 15, height = 8, units = "cm", dpi = 600)
+ggsave(paste("plots", paste(args[1], ".png", sep = ""), sep = "/"), width = 30, height = 16, units = "cm", dpi = 600)
