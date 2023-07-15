@@ -113,7 +113,6 @@ class CCFv3Torch(torch.utils.data.Dataset):
         self,
         header_path: str,
         binary_path: Optional[str] = None,
-        size: Tuple[int, int] = (512, 512),
         exclude_ends: Tuple[int, int] = (0, 0),
         dorsoventral_rotation: Tuple[float, float] = (-25, 25),
         mediolateral_rotation: Tuple[float, float] = (-8, 8),
@@ -126,7 +125,6 @@ class CCFv3Torch(torch.utils.data.Dataset):
         self.volume = torch.from_numpy(self.volume).to(self.device)
         self.volume /= self.volume.max()
 
-        self.size = size
         self.exclude_ends = exclude_ends
         self.dorsoventral_rotation = dorsoventral_rotation
         self.medialateral_rotation = mediolateral_rotation
@@ -188,9 +186,6 @@ class CCFv3Torch(torch.utils.data.Dataset):
 
         fixed = fixed.unsqueeze(0)
         moving = moving.unsqueeze(0)
-
-        fixed = transformation.pad_resize(fixed, *self.size[::-1])
-        moving = transformation.pad_resize(moving, *self.size[::-1])
 
         fixed = transformation.affine(
             fixed,

@@ -24,10 +24,10 @@ def transform(data):
 
 
 class BaseModel(pl.LightningModule):
-    def __init__(self, resize: int = 64, save_images_every_n_epochs: int = 0, learning_rate: float = 1e-3):
+    def __init__(self, size: int = 64, save_images_every_n_epochs: int = 0, learning_rate: float = 1e-3):
         super().__init__()
 
-        self.size = resize
+        self.size = size
 
         self.learning_rate = learning_rate
 
