@@ -317,19 +317,42 @@ class Classifier(BaseModel):
     def training_step(self, batch: torch.Tensor, batch_idx: int):
         fixed, moving, offset_x, offset_y, rotation, scale, aspect = batch
 
-        pred_x, pred_y, pred_r, pred_s, pred_a = self((fixed, moving))
+        self.configure_step(batch_idx)
+        if self.save_images:
+            torchvision.utils.save_image(fixed, os.path.join(self.image_dir, f'{self.current_epoch}_fixed.png'))
+            torchvision.utils.save_image(moving, os.path.join(self.image_dir, f'{self.current_epoch}_moving.png'))
 
-        loss_h = self.loss_function(pred_x, self._dichotomise(offset_x, 0, 3))
-        loss_v = self.loss_function(pred_y, self._dichotomise(offset_y, 0, 3))
-        loss_r = self.loss_function(pred_r, self._dichotomise(rotation, 0, 1))
-        loss_s = self.loss_function(pred_s, self._dichotomise(scale, 1, 0.05))
-        loss_a = self.loss_function(pred_a, self._dichotomise(aspect, 1, 0.05))
 
-        location_loss = offset_x**2 * loss_h + offset_y**2 * loss_v
-        rotation_loss = rotation**2 * loss_r
-        scale_loss = (torch.abs(scale - 1) * 10)**2 * loss_s + (torch.abs(aspect - 1) * 10)**2 * loss_a
+        moved = moving.clone()
+        cum_x, cum_y, cum_r = (torch.zeros(moving.shape[0], device=moving.device) for _ in range(3))
+        cum_s, cum_a = (torch.ones(moving.shape[0], device=moving.device) for _ in range(2))
 
-        loss = location_loss + rotation_loss + scale_loss
+        loss = torch.zeros(fixed.shape[0], device=fixed.device)
+        for i in range(25):
+            pred_x, pred_y, pred_r, pred_s, pred_a = self((fixed, moved))
+
+            loss_h = self.loss_function(pred_x, self._dichotomise(offset_x - cum_x, 0, 3))
+            loss_v = self.loss_function(pred_y, self._dichotomise(offset_y - cum_y, 0, 3))
+            loss_r = self.loss_function(pred_r, self._dichotomise(rotation - cum_r, 0, 1))
+            loss_s = self.loss_function(pred_s, self._dichotomise(scale - cum_s, 1, 0.05))
+            loss_a = self.loss_function(pred_a, self._dichotomise(aspect - cum_a, 1, 0.05))
+
+            location_loss = offset_x**2 * loss_h + offset_y**2 * loss_v
+            rotation_loss = rotation**2 * loss_r
+            scale_loss = (torch.abs(scale - 1) * 10)**2 * loss_s + (torch.abs(aspect - 1) * 10)**2 * loss_a
+
+            loss += location_loss + rotation_loss + scale_loss
+
+            cum_x += (offset_x - cum_x) / 5
+            cum_y += (offset_x - cum_y) / 5
+            cum_r += (rotation - cum_r) / 5
+            cum_s *= 1 + (scale - cum_s) / 5
+            cum_a *= 1 + (aspect - cum_a) / 5
+
+            moved = torch.stack(tuple(map(transform, zip(moving, cum_x, cum_y, cum_r, cum_s, cum_a))))
+
+            if self.save_images:
+                torchvision.utils.save_image(moved, os.path.join(self.image_dir, f'{self.current_epoch}_moved_{i}.png'))
 
         self.log('train_loss', loss.mean())
         self.log('location_loss', location_loss.mean())
