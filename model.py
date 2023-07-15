@@ -33,10 +33,10 @@ class BaseModel(pl.LightningModule):
 
         self.save_every = save_images_every_n_epochs
         self.save_images = False
-        self.image_dir = os.path.join(self.logger.log_dir, 'figures')
 
     def configure_step(self, batch_idx: int):
         self.save_images = self.save_every != 0 and self.current_epoch % self.save_every == 0 and batch_idx == 0
+        self.image_dir = os.path.join(self.logger.log_dir, 'figures')
 
     def on_after_batch_transfer(self, batch: list[torch.Tensor], _: int) -> list[torch.Tensor]:
         fixed, moving, *c = batch
