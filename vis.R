@@ -6,8 +6,13 @@ library(tidyr)
 library(ggplot2)
 
 args <- commandArgs(trailingOnly = TRUE)
-
 v_num <- args[1]
+if (length(args) == 1) {
+    cutoff = 10
+} else {
+    cutoff = strtoi(args[2])
+}
+
 metrics_path <- paste(
     "logs",
     "lightning_logs",
@@ -22,7 +27,7 @@ metrics %>%
     pivot_longer(!c(epoch, step), names_to = "loss", values_to = "value") %>%
     group_by(epoch, loss) %>%
     summarise(value = mean(value)) %>%
-    filter(epoch >= 10) %>%
+    filter(epoch >= cutoff) %>%
     ggplot() +
         aes(x = epoch, y = value) +
         facet_wrap(~loss, scales = "free_y") +
