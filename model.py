@@ -17,10 +17,11 @@ def transform(data):
 
     return transformation.affine(
         m,
-        angle=r,
-        translate=(x, y),
-        scale=(s, s * a),
-        shear=(0, 0)
+        x=x.detach().cpu().item(),
+        y=y.detach().cpu().item(),
+        angle=r.detach().cpu().item(),
+        scale=s.detach().cpu().item(),
+        aspect=a.detach().cpu().item()
     )
 
 
@@ -48,7 +49,13 @@ class BaseModel(pl.LightningModule):
         return self._image_dir
 
     def on_after_batch_transfer(self, batch: list[torch.Tensor], _: int) -> list[torch.Tensor]:
-        fixed, moving, *c = batch
+        fixed, moving, x, y, r, s, a = batch
+
+        *_, h, w = fixed.shape
+        if w > h:
+            location_factor = self.size / w
+        else:
+            location_factor = self.size / h
 
         if self.training:
             fixed = augmentation.augment(
@@ -71,7 +78,11 @@ class BaseModel(pl.LightningModule):
         return [
             fixed,
             moving,
-            *c
+            x * location_factor,
+            y * location_factor,
+            r,
+            s,
+            a
         ]
 
     def configure_optimizers(self):
@@ -145,18 +156,21 @@ class JointRegressor(BaseModel):
 
 
 class Regressor(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, input_size: int):
         super().__init__()
 
         self.resnet = resnet.create_resnet(
             model_depth=10,
+            pretrained=True,
             n_input_channels=2,
-            num_classes=64,
-            activation_function=torch.nn.ELU,
-            linear_factor=16,
+            num_classes=1024,
+            activation_function=torch.nn.ReLU,
+            do_avg_pool=False,
+            input_size=(input_size, input_size),
         )
         self.elu = torch.nn.ELU()
-        self.hidden = torch.nn.Linear(64, 32)
+        self.fc1 = torch.nn.Linear(1024, 128)
+        self.fc2 = torch.nn.Linear(128, 32)
         self.regressor = torch.nn.Linear(32, 5)
 
     def forward(self, x: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
@@ -164,7 +178,9 @@ class Regressor(torch.nn.Module):
 
         z = self.resnet(x_)
         z = self.elu(z)
-        z = self.hidden(z)
+        z = self.fc1(z)
+        z = self.elu(z)
+        z = self.fc2(z)
         z = self.elu(z)
         z = self.regressor(z)
 
@@ -176,7 +192,7 @@ class CascadeRegressor(BaseModel):
         super().__init__(**kwargs)
 
         self.layers = torch.nn.ModuleList(
-            Regressor()
+            Regressor(input_size=kwargs['size'])
             for _ in range(cascade_layers)
         )
 
@@ -189,6 +205,8 @@ class CascadeRegressor(BaseModel):
 
         cum_x, cum_y, cum_r = (torch.zeros(moving.shape[0], device=moving.device) for _ in range(3))
         cum_s, cum_a = (torch.ones(moving.shape[0], device=moving.device) for _ in range(2))
+        cum_x_abs, cum_y_abs, cum_r_abs = (torch.zeros(moving.shape[0], device=moving.device) for _ in range(3))
+        cum_s_abs, cum_a_abs = (torch.ones(moving.shape[0], device=moving.device) for _ in range(2))
 
         moved = moving.clone()
         for i, layer in enumerate(self.layers):
@@ -205,13 +223,18 @@ class CascadeRegressor(BaseModel):
             cum_s *= pred_s
             cum_a *= pred_a
 
-            if i < len(self.layers) - 1:
-                moved = torch.stack(tuple(map(transform, zip(moving, cum_x, cum_y, cum_r, cum_s, cum_a))))
+            cum_x_abs += pred_x.abs()
+            cum_y_abs += pred_y.abs()
+            cum_r_abs += pred_r.abs()
+            cum_s_abs *= (pred_s - 1).abs() + 1
+            cum_a_abs *= (pred_a - 1).abs() + 1
+
+            moved = torch.stack(tuple(map(transform, zip(moving, cum_x, cum_y, cum_r, cum_s, cum_a))))
 
             if self.save_images:
                 torchvision.utils.save_image(moved, os.path.join(self.image_dir, f'{self.current_epoch}_moved_{i}.png'))
 
-        return moving, cum_x, cum_y, cum_r, cum_s, cum_a
+        return moving, cum_x, cum_y, cum_r, cum_s, cum_a, cum_x_abs, cum_y_abs, cum_r_abs, cum_s_abs, cum_a_abs
 
     def training_step(self, batch: torch.Tensor, batch_idx: int):
         fixed, moving, offset_x, offset_y, rotation, scale, aspect = batch
@@ -219,29 +242,110 @@ class CascadeRegressor(BaseModel):
 
         self.configure_step(batch_idx)
 
-        *_, w, h = fixed.shape
-        if w > h:
-            location_factor = self.size / w
-        else:
-            location_factor = self.size / h
+        _, pred_x, pred_y, pred_r, pred_s, pred_a, x_abs, y_abs, r_abs, s_abs, a_abs = self((fixed, moving))
 
-        _, pred_x, pred_y, pred_r, pred_s, pred_a = self((fixed, moving))
-
-        location_loss = ((offset_x * location_factor - pred_x)**2 + (offset_y * location_factor - pred_y)**2).mean()
+        location_loss = ((offset_x - pred_x)**2 + (offset_y - pred_y)**2).mean()
         rotation_loss = ((rotation - pred_r)**2).mean()
         scale_loss = ((scale - pred_s)**2).mean() + ((aspect - pred_a)**2).mean()
 
-        loss = location_loss + rotation_loss + 100 * scale_loss
+        smoothness_regularisor = (
+            ((pred_x.abs() - x_abs)**2).mean() +
+            ((pred_y.abs() - y_abs)**2).mean() +
+            ((pred_r.abs() - r_abs)**2).mean() +
+            (((pred_s - 1).abs() + 1 - s_abs)**2).mean() +
+            (((pred_a - 1).abs() + 1 - a_abs)**2).mean()
+        )
+
+        loss = location_loss + rotation_loss + 100 * scale_loss + smoothness_regularisor
 
         self.log('train_loss', loss)
         self.log('location_loss', location_loss)
         self.log('rotation_loss', rotation_loss)
         self.log('scale_loss', scale_loss)
+        self.log('smoothness', smoothness_regularisor.mean())
+        self.log('s_x', ((pred_x.abs() - x_abs)**2).mean())
+        self.log('s_y', ((pred_y.abs() - y_abs)**2).mean())
+        self.log('s_r', ((pred_r.abs() - r_abs)**2).mean())
+        self.log('s_s', (((pred_s - 1).abs() + 1 - s_abs)**2).mean())
+        self.log('s_a', (((pred_a - 1).abs() + 1 - a_abs)**2).mean())
         self.log('mae_x', (offset_x - pred_x).abs().mean())
         self.log('mae_y', (offset_y - pred_y).abs().mean())
         self.log('mae_r', (rotation - pred_r).abs().mean())
         self.log('mae_s', (scale - pred_s).abs().mean())
         self.log('mae_a', (aspect - pred_a).abs().mean())
+
+        return loss
+
+
+class GridRegressor(BaseModel):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.model = Regressor(input_size=kwargs['size'])
+
+    def forward(self, x: Tuple[torch.Tensor, torch.Tensor]) -> Tuple[torch.Tensor, ...]:
+        fixed, moving = x
+
+        if self.save_images:
+            torchvision.utils.save_image(fixed, os.path.join(self.image_dir, f'{self.current_epoch}_fixed.png'))
+            torchvision.utils.save_image(moving, os.path.join(self.image_dir, f'{self.current_epoch}_moving.png'))
+
+        pred_x, pred_y, pred_r, pred_s, pred_a = map(torch.stack, zip(*self.model((fixed, moving))))
+        pred_s = torch.sigmoid(pred_s) * 2
+        pred_a = torch.sigmoid(pred_a) * 2
+
+        if self.save_images:
+            moved = torch.stack(tuple(map(transform, zip(moving, pred_x, pred_y, pred_r, pred_s, pred_a))))
+            torchvision.utils.save_image(moved, os.path.join(self.image_dir, f'{self.current_epoch}_moved.png'))
+
+        return pred_x, pred_y, pred_r, pred_s, pred_a
+
+    def training_step(self, batch: torch.Tensor, batch_idx: int):
+        fixed, moving, *transforms = batch
+        assert fixed.shape == moving.shape
+
+        self.configure_step(batch_idx)
+
+        predictions = self((fixed, moving))
+
+        *_, h, w = fixed.shape
+        grid_xx, grid_yy = torch.meshgrid(
+            torch.linspace(0, self.size - 1, steps=10),
+            torch.linspace(0, self.size - 1, steps=10),
+            indexing='ij'
+        )
+        points = torch.vstack((
+            grid_xx.flatten(),
+            grid_yy.flatten(),
+            torch.ones(grid_xx.numel())
+        ))
+
+        loss = torch.zeros(1, device=self.device)
+        for (x_true, y_true, r_true, s_true, a_true), (x, y, r, s, a) in zip(zip(*transforms), zip(*predictions)):
+            transformation_matrix_target = transformation.affine_transformation_matrix(
+                x=x_true,
+                y=y_true,
+                angle=r_true,
+                scale=s_true,
+                aspect=a_true,
+                width=w,
+                height=h
+            )
+            transformation_matrix_prediction = transformation.affine_transformation_matrix(
+                x=x,
+                y=y,
+                angle=r,
+                scale=s,
+                aspect=a,
+                width=w,
+                height=h
+            )
+
+            xs, ys, _ = transformation_matrix_target @ points - transformation_matrix_prediction @ points
+            loss += (xs**2 + ys**2).mean()
+        loss /= fixed.shape[0]  # mean over batch
+
+        self.log('train_loss', loss)
 
         return loss
 
@@ -297,7 +401,7 @@ class Classifier(BaseModel):
         z = self.elu(z)
         z = self.hidden(z)
         z = self.elu(z)
-        
+
         h = self.horizontal(z)
         v = self.vertical(z)
         r = self.rotation(z)
@@ -305,7 +409,7 @@ class Classifier(BaseModel):
         a = self.aspect(z)
 
         return h, v, r, s, a
-    
+
     def _dichotomise(self, x: torch.Tensor, threshold: float = 0, epsilon: float = 5):
         y = torch.zeros_like(x, dtype=torch.long, device=x.device)
         y[x > threshold + epsilon] = 0
@@ -321,7 +425,6 @@ class Classifier(BaseModel):
         if self.save_images:
             torchvision.utils.save_image(fixed, os.path.join(self.image_dir, f'{self.current_epoch}_fixed.png'))
             torchvision.utils.save_image(moving, os.path.join(self.image_dir, f'{self.current_epoch}_moving.png'))
-
 
         moved = moving.clone()
         cum_x, cum_y, cum_r = (torch.zeros(moving.shape[0], device=moving.device) for _ in range(3))
