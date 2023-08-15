@@ -1,10 +1,12 @@
 """Configurable 2D ResNet implementation, based on PyTorch's ResNet"""
 
 from typing import Callable, Dict, List, Optional, Tuple, Type, Union
+import re
 
 import torch
 import torch.nn as nn
 from torch import Tensor
+import torchvision
 
 
 def conv3x3(
@@ -198,7 +200,8 @@ class ResNet(nn.Module):
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         linear_factor = linear_factor or 1
-        self.fc = nn.Linear(planes[-1] * block.expansion * linear_factor, num_classes)
+        self.fc = nn.Linear(linear_factor, num_classes)
+        self.lessen_channels = nn.Conv2d(planes[-1], 8, kernel_size=1)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -270,8 +273,7 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def _forward_impl(self, x: Tensor) -> Tensor:
-        # See note [TorchScript super()]
+    def _forward_conv(self, x: Tensor) -> Tensor:
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.activation(x)
@@ -280,15 +282,24 @@ class ResNet(nn.Module):
         for layer in self.layers:
             x = layer(x)
 
+        x = self.lessen_channels(x)
+
+        return x
+
+    def _forward_linear(self, x: Tensor) -> Tensor:
         if self.do_avg_pool:
             x = self.avgpool(x)
+
         x = torch.flatten(x, 1)
         x = self.fc(x)
 
         return x
 
     def forward(self, x: Tensor) -> Tensor:
-        return self._forward_impl(x)
+        x = self._forward_conv(x)
+        x = self._forward_linear(x)
+
+        return x
 
 
 DEFAULT_PLANES = [64, 128, 256, 512]
@@ -298,7 +309,8 @@ Block = Union[Type[BasicBlock], Type[Bottleneck]]
 NETS: Dict[int, Tuple[Block, List[int], List[int]]] = {
     6: (BasicBlock, [1, 1], DEFAULT_PLANES[:2]),
     8: (BasicBlock, [1, 1, 1], DEFAULT_PLANES[:3]),
-    10: (BasicBlock, [1, 1, 1, 1], DEFAULT_PLANES),
+    # 10: (BasicBlock, [1, 1, 1, 1], DEFAULT_PLANES),
+    10: (BasicBlock, [2, 2], DEFAULT_PLANES[:2]),
     18: (BasicBlock, [2, 2, 2, 2], DEFAULT_PLANES),
     34: (BasicBlock, [3, 4, 6, 3], DEFAULT_PLANES),
     50: (Bottleneck, [3, 4, 6, 3], DEFAULT_PLANES),
@@ -306,8 +318,61 @@ NETS: Dict[int, Tuple[Block, List[int], List[int]]] = {
     152: (Bottleneck, [3, 8, 36, 3], DEFAULT_PLANES),
 }
 
+PRETRAINED: Dict[int, torchvision.models.resnet.WeightsEnum] = {
+    10: torchvision.models.resnet.ResNet18_Weights,
+    18: torchvision.models.resnet.ResNet18_Weights,
+    34: torchvision.models.resnet.ResNet34_Weights,
+    50: torchvision.models.resnet.ResNet50_Weights,
+    101: torchvision.models.resnet.ResNet101_Weights,
+    152: torchvision.models.resnet.ResNet152_Weights,
+}
 
-def create_resnet(model_depth: int, **kwargs) -> ResNet:
+
+def create_resnet(
+    model_depth: int,
+    pretrained: bool = False,
+    do_avg_pool: bool = False,
+    input_size: Optional[Tuple[int, int]] = None,
+    **kwargs
+) -> ResNet:
     block, layers, planes = NETS[model_depth]
 
-    return ResNet(block=block, layers=layers, planes=planes, **kwargs)
+    if not do_avg_pool:
+        if input_size is None:
+            raise ValueError
+
+        test_net = ResNet(block=block, layers=layers, planes=planes, **kwargs)
+        test_net.forward = test_net._forward_conv
+
+        import rf
+        rf_size = rf.receptivefield(test_net, (1, kwargs['n_input_channels'], *input_size))
+        print(f'Output size calculation: {rf_size.outputsize}')
+
+        # linear_factor = planes[-1] * block.expansion * rf_size.outputsize.w * rf_size.outputsize.h
+        linear_factor = 8 * block.expansion * rf_size.outputsize.w * rf_size.outputsize.h
+    else:
+        linear_factor = None
+
+    net = ResNet(block=block, layers=layers, planes=planes, linear_factor=linear_factor, **kwargs)
+
+    if pretrained:
+        if model_depth not in PRETRAINED.keys():
+            raise ValueError
+
+        weights = torch.hub.load_state_dict_from_url(
+            PRETRAINED[model_depth].DEFAULT.url
+        )
+        weights['conv1.weight'] = weights['conv1.weight'].sum(dim=1, keepdim=True).repeat(1, kwargs['n_input_channels'], 1, 1)
+        weights.pop('fc.weight')
+        weights.pop('fc.bias')
+
+        for key in list(weights.keys()):
+            if m := re.match(r'layer(\d+)(.*)', key, re.ASCII):
+                i = int(m.group(1))
+                weights[f'layers.{i - 1}{m.group(2)}'] = weights.pop(key)
+
+        ik = net.load_state_dict(weights, strict=False)
+        # assert len(ik.missing_keys) == 2
+        # assert len(ik.unexpected_keys) == 0
+
+    return net
