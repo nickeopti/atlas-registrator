@@ -51,9 +51,9 @@ class CCFv3Torch(torch.utils.data.Dataset):
         p = (R @ g.T).T.round().type(torch.int)
 
         values = self.volume[(
-            torch.clip(p[:, 0] + slide, 0, dim[0]-1),
-            torch.clip(p[:, 1] + dim[1] // 2, 0, dim[1]-1),
-            torch.clip(p[:, 2] + dim[2] // 2, 0, dim[2]-1)
+            torch.clip(p[:, 0] + slide, 0, dim[0] - 1),
+            torch.clip(p[:, 1] + dim[1] // 2, 0, dim[1] - 1),
+            torch.clip(p[:, 2] + dim[2] // 2, 0, dim[2] - 1)
         )].reshape(dim[1], dim[2])
 
         slide = values
@@ -70,7 +70,7 @@ class CCFv3Torch(torch.utils.data.Dataset):
 
         r = random.uniform(-30, 30)
         s = random.uniform(0.5, 2)
-        a = random.uniform(2/3, 1.5)
+        a = random.uniform(2 / 3, 1.5)
 
         x = random.randint(-149, 149)
         y = random.randint(-149, 149)
@@ -88,10 +88,11 @@ class CCFv3Torch(torch.utils.data.Dataset):
 
         fixed = transformation.affine(
             fixed,
+            x=x,
+            y=y,
             angle=r,
-            translate=(x, y),
-            scale=(s, s * a),
-            shear=(0, 0)
+            scale=s,
+            aspect=a
         )
 
         return fixed.float().squeeze(), moving.float().squeeze(), x, y, r, s, a

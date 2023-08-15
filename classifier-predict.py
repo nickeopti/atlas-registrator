@@ -73,10 +73,11 @@ if __name__ == '__main__':
 
             moved = transformation.affine(
                 moving,
+                x=cum_h,
+                y=cum_v,
                 angle=cum_r,
-                translate=(cum_h, cum_v),
-                scale=(cum_s, cum_s * cum_a),
-                shear=(0, 0)
+                scale=cum_s,
+                aspect=cum_a
             )
 
             torchvision.utils.save_image(moved, f'cp/moved_{i}.png')
