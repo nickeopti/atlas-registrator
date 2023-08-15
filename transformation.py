@@ -1,6 +1,3 @@
-import math
-from typing import List
-
 import kornia.enhance.equalization
 import torch
 import torchvision.transforms._functional_tensor as f_t
@@ -26,7 +23,7 @@ def pad_resize(image: torch.Tensor, h, w):
     # check if the original and final aspect ratios are the same within a margin
     if round(ratio_1, 2) != round(ratio_f, 2):
         # padding to preserve aspect ratio
-        hp = int(w_1/ratio_f - h_1)
+        hp = int(w_1 / ratio_f - h_1)
         wp = int(ratio_f * h_1 - w_1)
         if hp > 0 and wp < 0:
             hp = hp // 2
@@ -38,68 +35,103 @@ def pad_resize(image: torch.Tensor, h, w):
     return f.resize(image, [h, w], antialias=True)
 
 
-def _get_inverse_affine_matrix(
-    center: List[float], angle: float, translate: List[float], scale: List[float], shear: List[float]
-) -> List[float]:
-    # Adapted from:
-    # https://github.com/pytorch/vision/blob/main/torchvision/transforms/functional.py#L1014-L1071
-    # to allow for different scales in each direction.
+def _differentiable_affine_matrix(rows):
+    assert len(rows) == 3
 
-    # Helper method to compute inverse matrix for affine transformation
-
-    # Pillow requires inverse affine transformation matrix:
-    # Affine matrix is : M = T * C * RotateScaleShear * C^-1
-    #
-    # where T is translation matrix: [1, 0, tx | 0, 1, ty | 0, 0, 1]
-    #       C is translation matrix to keep center: [1, 0, cx | 0, 1, cy | 0, 0, 1]
-    #       RotateScaleShear is rotation with scale and shear matrix
-    #
-    #       RotateScaleShear(a, s, (sx, sy)) =
-    #       = R(a) * S(s) * SHy(sy) * SHx(sx)
-    #       = [ s*cos(a - sy)/cos(sy), s*(-cos(a - sy)*tan(sx)/cos(sy) - sin(a)), 0 ]
-    #         [ s*sin(a - sy)/cos(sy), s*(-sin(a - sy)*tan(sx)/cos(sy) + cos(a)), 0 ]
-    #         [ 0                    , 0                                      , 1 ]
-    # where R is a rotation matrix, S is a scaling matrix, and SHx and SHy are the shears:
-    # SHx(s) = [1, -tan(s)] and SHy(s) = [1      , 0]
-    #          [0, 1      ]              [-tan(s), 1]
-    #
-    # Thus, the inverse is M^-1 = C * RotateScaleShear^-1 * C^-1 * T^-1
-
-    rot = math.radians(angle)
-    sx = math.radians(shear[0])
-    sy = math.radians(shear[1])
-
-    scale_x, scale_y = scale
-
-    cx, cy = center
-    tx, ty = translate
-
-    # RSS without scaling
-    a = math.cos(rot - sy) / math.cos(sy)
-    b = -math.cos(rot - sy) * math.tan(sx) / math.cos(sy) - math.sin(rot)
-    c = math.sin(rot - sy) / math.cos(sy)
-    d = -math.sin(rot - sy) * math.tan(sx) / math.cos(sy) + math.cos(rot)
-
-    # Inverted rotation matrix with scale and shear 
-    # det([[a, b], [c, d]]) == 1, since det(rotation) = 1 and det(shear) = 1
-    matrix = [
-        d / scale_x, -b / scale_x, 0.0,
-        -c / scale_y, a / scale_y, 0.0
-    ]
-    # matrix = [x / scale for x in matrix]
-    # Apply inverse of translation and of center translation: RSS^-1 * C^-1 * T^-1
-    matrix[2] += matrix[0] * (-cx - tx) + matrix[1] * (-cy - ty)
-    matrix[5] += matrix[3] * (-cx - tx) + matrix[4] * (-cy - ty)
-    # Apply center translation: C * RSS^-1 * C^-1 * T^-1
-    matrix[2] += cx
-    matrix[5] += cy
+    matrix = torch.eye(3).double()  # identity matrix as basis
+    for i, row in enumerate(rows):
+        for j, value in enumerate(row):
+            # in-place, gradient preserving update
+            matrix.index_put_(
+                (torch.tensor(i), torch.tensor(j)),
+                values=value.double() if isinstance(value, torch.Tensor) else torch.tensor(value).double()
+            )
 
     return matrix
 
 
-def affine(img, angle: float, translate: List[int], scale: List[float], shear: List[float]):
-    center_f = [0.0, 0.0]
-    translate_f = [1.0 * t for t in translate]
+def _vertical_reflection_matrix():
+    return torch.tensor([
+        [1, 0, 0],
+        [0, -1, 0],
+        [0, 0, 1]
+    ]).float()
 
-    matrix = _get_inverse_affine_matrix(center_f, angle, translate_f, scale, shear)
+
+def _translation_matrix(x: float, y: float):
+    return _differentiable_affine_matrix([
+        [1, 0, x],
+        [0, 1, y],
+        [0, 0, 1]
+    ]).float()
+    # m = torch.eye(3).float()
+    # m[0, 2] = x
+    # m[1, 2] = y
+    # return m
+
+
+def _rotation_matrix(angle: float):
+    if isinstance(angle, (int, float)):
+        angle = torch.tensor(angle).float()
+    theta = torch.deg2rad(angle)
+    return _differentiable_affine_matrix([
+        [torch.cos(theta), -torch.sin(theta), 0],
+        [torch.sin(theta), torch.cos(theta), 0],
+        [0, 0, 1]
+    ]).float()
+    # m = torch.eye(3).float()
+    # m[0, 0] = torch.cos(theta)
+    # m[0, 1] = -torch.sin(theta)
+    # m[1, 0] = torch.sin(theta)
+    # m[1, 1] = torch.cos(theta)
+    # return m
+
+
+def _scale_matrix(s: float, a: float):
+    return _differentiable_affine_matrix([
+        [s, 0, 0],
+        [0, s * a, 0],
+        [0, 0, 1]
+    ]).float()
+    # m = torch.eye(3).float()
+    # m[0, 0] = s
+    # m[1, 1] = s * a
+    # return m
+
+
+def affine_transformation_matrix(x: float, y: float, angle: float, scale: float, aspect: float, width: int, height: int):
+    return (
+        # go from cartesian to image coordinates
+        _translation_matrix(0, height) @
+        _vertical_reflection_matrix() @
+        # undo centering
+        _translation_matrix(width / 2, height / 2) @
+        # translate
+        _translation_matrix(x, -y) @
+        # rotate
+        _rotation_matrix(-angle) @
+        # scale
+        _scale_matrix(scale, aspect) @
+        # centering
+        _translation_matrix(-width / 2, -height / 2) @
+        # go from image to cartesian coordinates
+        _vertical_reflection_matrix() @
+        _translation_matrix(0, -height)
+    )
+
+
+def affine_transformation_matrix_torch(x: float, y: float, angle: float, scale: float, aspect: float):
+    t = _translation_matrix(x, y)
+    r = _rotation_matrix(angle)
+    s = _scale_matrix(scale, aspect)
+
+    matrix = t @ r @ s
+    inverse = torch.linalg.inv(matrix)
+
+    return list(inverse[:2].flatten())
+
+
+def affine(img: torch.Tensor, x: float, y: float, angle: float, scale: float, aspect: float):
+    matrix = affine_transformation_matrix_torch(x, y, angle, scale, aspect)
+
     return f_t.affine(img, matrix=matrix)
