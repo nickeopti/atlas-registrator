@@ -156,25 +156,31 @@ class JointRegressor(BaseModel):
 
 
 class Regressor(torch.nn.Module):
-    def __init__(self, input_size: int):
+    def __init__(self, input_size: int, layered: bool = True):
         super().__init__()
+        self.layered = layered
 
         self.resnet = resnet.create_resnet(
             model_depth=10,
             pretrained=True,
-            n_input_channels=2,
+            n_input_channels=2 if layered else 1,
             num_classes=1024,
             activation_function=torch.nn.ReLU,
             do_avg_pool=False,
             input_size=(input_size, input_size),
         )
         self.elu = torch.nn.ELU()
-        self.fc1 = torch.nn.Linear(1024, 128)
+        self.fc1 = torch.nn.Linear(1024 if layered else 2048, 128)
         self.fc2 = torch.nn.Linear(128, 32)
         self.regressor = torch.nn.Linear(32, 5)
 
     def forward(self, x: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
-        x_ = torch.hstack(x)
+        if self.layered:
+            x_ = torch.hstack(x)
+        else:
+            f = self.resnet(x[0])
+            m = self.resnet(x[1])
+            x_ = torch.hstack((f, m))
 
         z = self.resnet(x_)
         z = self.elu(z)
@@ -293,6 +299,10 @@ class GridRegressor(BaseModel):
         pred_x, pred_y, pred_r, pred_s, pred_a = map(torch.stack, zip(*self.model((fixed, moving))))
         pred_s = torch.sigmoid(pred_s) * 2
         pred_a = torch.sigmoid(pred_a) * 2
+
+        if torch.any(torch.isnan(pred_x)) or torch.any(torch.isnan(pred_y)) or torch.any(torch.isnan(pred_r)) or torch.any(torch.isnan(pred_s)) or torch.any(torch.isnan(pred_a)):
+            import ipdb
+            ipdb.set_trace()
 
         if self.save_images:
             moved = torch.stack(tuple(map(transform, zip(moving, pred_x, pred_y, pred_r, pred_s, pred_a))))
