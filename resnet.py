@@ -362,7 +362,7 @@ def create_resnet(
         weights = torch.hub.load_state_dict_from_url(
             PRETRAINED[model_depth].DEFAULT.url
         )
-        weights['conv1.weight'] = weights['conv1.weight'].sum(dim=1, keepdim=True).repeat(1, kwargs['n_input_channels'], 1, 1)
+        weights['conv1.weight'] = weights['conv1.weight'].sum(dim=1, keepdim=True).repeat(1, kwargs['n_input_channels'], 1, 1) / kwargs['n_input_channels']
         weights.pop('fc.weight')
         weights.pop('fc.bias')
 
