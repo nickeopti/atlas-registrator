@@ -115,8 +115,13 @@ if __name__ == '__main__':
             atlas[1, i, j] = g
             atlas[2, i, j] = b
 
+    *_, h, w = atlas.shape
+    if w > h:
+        location_factor = args.size / w
+    else:
+        location_factor = args.size / h
 
-    moved_atlas = transformation.affine(atlas, x, y, r, s, a)
+    moved_atlas = transformation.affine(atlas, x / location_factor, y / location_factor, r, s, a)
     resized_moved_atlas = transformation.pad_resize(moved_atlas, args.size, args.size)
 
     torchvision.utils.save_image(
