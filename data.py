@@ -18,12 +18,16 @@ class CCFv3Torch(torch.utils.data.Dataset):
         mediolateral_rotation: Tuple[float, float] = (-8, 8),
         augment: bool = True,
         accelerator: str = 'cpu',
+        preserve_int: bool = False,
     ) -> None:
         self.device = accelerator
 
         self.volume = nrrdu.read(header_path, binary_path)
+        if preserve_int:
+            self.volume = self.volume.astype(int)
         self.volume = torch.from_numpy(self.volume).to(self.device)
-        self.volume /= self.volume.max()
+        if not preserve_int:
+            self.volume /= self.volume.max()
 
         self.exclude_ends = exclude_ends
         self.dorsoventral_rotation = dorsoventral_rotation
